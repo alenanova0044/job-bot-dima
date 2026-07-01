@@ -5,6 +5,7 @@ import time
 import os
 import re
 from datetime import datetime
+from bs4 import BeautifulSoup
 
 # ── НАСТРОЙКИ ────────────────────────────────────────────────────────────────
 GEMINI_KEY = os.environ.get("GEMINI_KEY", "")
@@ -19,6 +20,22 @@ RSS_FEEDS = [
     "https://www.workatastartup.com/jobs.rss",
     "https://jobicy.com/?feed=job_feed",
     "https://remote.co/remote-jobs/feed/",
+]
+
+# Публичные Telegram-каналы (username без @). Читаются через веб-страницу t.me/s/<name>.
+TG_CHANNELS = [
+    "forproducer",
+    "rabotavserbii",
+    "digitalclubjobs",
+    "normremote",
+    "remotejobss",
+    "evacuatejobs",
+    "relocateme",
+    "young_relocate",
+    "geekjobs",
+    "bbe_jobs",
+    "it_vakansii_jobs",
+    "youritjob",
 ]
 
 PROMPT = """Ты рекрутер. Проанализируй вакансию по профилю кандидата.
@@ -107,6 +124,100 @@ def parse_card(response):
         return match.group(1).strip()
     return response.strip()
 
+# ── ИСТОЧНИКИ ────────────────────────────────────────────────────────────────
+
+def fetch_rss(feed_url):
+    """Возвращает список вакансий (dict) из одного RSS-фида."""
+    entries = []
+    try:
+        feed = feedparser.parse(feed_url)
+    except Exception as e:
+        print(f"  Ошибка фида: {e}")
+        return entries
+
+    for entry in feed.entries[:10]:  # последние 10
+        entries.append({
+            "link":        entry.get("link", ""),
+            "title":       entry.get("title", "Без названия"),
+            "company":     entry.get("author", entry.get("source", {}).get("title", "Неизвестно")),
+            "description": entry.get("summary", entry.get("description", "")),
+        })
+    return entries
+
+def fetch_tg_channel(channel):
+    """Читает публичную веб-страницу канала t.me/s/<channel> и возвращает последние посты."""
+    url = f"https://t.me/s/{channel}"
+    entries = []
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if not r.ok:
+            print(f"  TG @{channel}: HTTP {r.status_code}")
+            return entries
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        messages = soup.select(".tgme_widget_message")
+
+        for msg in messages[-10:]:  # последние 10 постов
+            text_el = msg.select_one(".tgme_widget_message_text")
+            text = text_el.get_text("\n").strip() if text_el else ""
+            if not text:
+                continue
+
+            post = msg.get("data-post", "")               # вида "channel/1234"
+            link = f"https://t.me/{post}" if post else url
+            title = text.split("\n")[0][:100]             # первая строка поста как заголовок
+
+            entries.append({
+                "link":        link,
+                "title":       title,
+                "company":     f"@{channel}",
+                "description": text,
+            })
+    except Exception as e:
+        print(f"  Ошибка TG @{channel}: {e}")
+    return entries
+
+# ── ОБРАБОТКА ────────────────────────────────────────────────────────────────
+
+def process_entries(entries, seen, source_label):
+    """Прогоняет список вакансий через дедуп → Gemini → отправку. Возвращает (новых, отправлено)."""
+    new_count = 0
+    sent_count = 0
+
+    for entry in entries:
+        link = entry.get("link", "")
+        if not link or link in seen:
+            continue
+
+        title   = entry.get("title", "Без названия")
+        company = entry.get("company", "Неизвестно")
+        desc    = entry.get("description", "")
+
+        new_count += 1
+        print(f"    Новая: {title[:60]}")
+
+        response = analyze_with_gemini(title, company, desc, link)
+        if not response:
+            seen.add(link)
+            continue
+
+        score = parse_score(response)
+        card  = parse_card(response)
+        print(f"    Оценка: {score}/10")
+
+        # Шлём только релевантные (6+)
+        if score >= 6:
+            card_with_source = f"{card}\n📌 Источник: {source_label}"
+            if send_telegram(card_with_source):
+                sent_count += 1
+                print(f"    ✅ Отправлено в TG")
+            time.sleep(1)
+
+        seen.add(link)
+        time.sleep(2)  # пауза между запросами к Gemini
+
+    return new_count, sent_count
+
 # ── ОСНОВНОЙ ЦИКЛ ────────────────────────────────────────────────────────────
 
 def run():
@@ -116,48 +227,21 @@ def run():
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Запуск. Уже видели: {len(seen)} вакансий")
 
+    # 1) RSS job-сайты
     for feed_url in RSS_FEEDS:
-        print(f"  Читаю: {feed_url}")
-        try:
-            feed = feedparser.parse(feed_url)
-            entries = feed.entries[:10]  # берём последние 10
-        except Exception as e:
-            print(f"  Ошибка фида: {e}")
-            continue
+        print(f"  Читаю RSS: {feed_url}")
+        entries = fetch_rss(feed_url)
+        n, s = process_entries(entries, seen, feed_url.split('/')[2])
+        new_count += n
+        sent_count += s
 
-        for entry in entries:
-            link = entry.get("link", "")
-            if not link or link in seen:
-                continue
-
-            title   = entry.get("title", "Без названия")
-            company = entry.get("author", entry.get("source", {}).get("title", "Неизвестно"))
-            desc    = entry.get("summary", entry.get("description", ""))
-
-            new_count += 1
-            print(f"    Новая: {title[:60]}")
-
-            # Анализируем через Gemini
-            response = analyze_with_gemini(title, company, desc, link)
-            if not response:
-                seen.add(link)
-                continue
-
-            score = parse_score(response)
-            card  = parse_card(response)
-
-            print(f"    Оценка: {score}/10")
-
-            # Шлём только релевантные (6+)
-            if score >= 6:
-                card_with_source = f"{card}\n📌 Источник: {feed_url.split('/')[2]}"
-                if send_telegram(card_with_source):
-                    sent_count += 1
-                    print(f"    ✅ Отправлено в TG")
-                time.sleep(1)
-
-            seen.add(link)
-            time.sleep(2)  # пауза между запросами к Gemini
+    # 2) Telegram-каналы (публичные веб-страницы)
+    for channel in TG_CHANNELS:
+        print(f"  Читаю TG-канал: @{channel}")
+        entries = fetch_tg_channel(channel)
+        n, s = process_entries(entries, seen, f"@{channel}")
+        new_count += n
+        sent_count += s
 
     save_seen(seen)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Готово. Новых: {new_count}, отправлено: {sent_count}")
