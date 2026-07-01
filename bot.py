@@ -17,6 +17,9 @@ TG_TOKEN   = os.environ.get("TG_TOKEN", "")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "-1003890109420")
 SEEN_FILE  = "seen_jobs.json"
 
+# Порог отправки в группу: карточка уходит, если оценка >= этого числа
+MIN_SCORE = 5
+
 RSS_FEEDS = [
     "https://remotive.com/remote-jobs/feed/",
     "https://weworkremotely.com/remote-jobs.rss",
@@ -42,15 +45,29 @@ TG_CHANNELS = [
     "youritjob",
 ]
 
-PROMPT = """Ты рекрутер. Проанализируй вакансию по профилю кандидата.
+PROMPT = """Ты рекрутер. Оцени, насколько вакансия подходит кандидату, и дай балл от 1 до 10.
 
-ПРОФИЛЬ КАНДИДАТА:
-- Роль: Digital Producer / Creative Project Manager / Account Manager
-- Опыт: 7+ лет, уровень Middle+/Senior
-- Формат: ТОЛЬКО remote или hybrid в Сербии
-- Целевые индустрии: creative agency, branding, fintech, digital agency, SaaS
-- Стоп-факторы: gambling, casino, junior, intern, pure sales, software developer
-- Зарплата цель: от 1800 EUR net
+ПРОФИЛЬ КАНДИДАТА (Дима):
+- Бэкграунд: 7+ лет в управлении digital/web-проектами, уровень Middle+/Senior.
+- Подходящие роли (широко): Digital Producer, Producer (в т.ч. в маркетинге/медиа),
+  Project Manager, Delivery Manager, Program Manager, Product Manager (не тех.),
+  Account Manager, Client Success / Client Engagement, Client Partner,
+  Project Coordinator (senior), Operations в digital/креативе.
+- Целевые индустрии: creative / branding agency, digital agency, fintech, SaaS,
+  media, product-компании с дизайн-командами.
+- Формат: подходит FULL REMOTE из любой точки. Офис/гибрид засчитывай ТОЛЬКО если
+  локация — Сербия или страна ЕС, ЛИБО в вакансии явно есть релокация/relocation
+  в ЕС/Сербию. Офис без релокации вне ЕС (напр. Москва-офис) — это минус к баллу.
+- English B2 (может собеседоваться голосом).
+
+КАК СТАВИТЬ БАЛЛ:
+- 8-10: роль прямо в цель (продюсер/PM/деливери/клиентская) + remote или ЕС/релокация.
+- 5-7: смежная подходящая роль ИЛИ хорошая роль, но формат/локация под вопросом.
+- 1-4: не его специализация (напр. чистая разработка кода, чистые холодные продажи,
+  junior/intern) ИЛИ жёсткий офис вне ЕС без релокации.
+- ЖЁСТКИЙ СТОП (ставь 1): gambling, casino, беттинг.
+Не блокируй вакансию только из-за слов "sales" или "engineer" в тексте —
+смотри на СУТЬ роли. Если роль подходящая, но с продажами/техникой по краю — это не стоп.
 
 ВАКАНСИЯ:
 Название: {title}
@@ -218,7 +235,7 @@ def process_entries(entries, seen, source_label):
         card  = parse_card(response)
         print(f"    Оценка: {score}/10")
 
-        if score >= 6:
+        if score >= MIN_SCORE:
             card_with_source = f"{card}\n📌 Источник: {source_label}"
             if send_telegram(card_with_source):
                 sent_count += 1
@@ -237,7 +254,7 @@ def run():
     new_count = 0
     sent_count = 0
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Запуск. Уже видели: {len(seen)} вакансий")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Запуск. Порог: {MIN_SCORE}+. Уже видели: {len(seen)} вакансий")
 
     # 1) Telegram-каналы (сначала - это основной источник)
     for channel in TG_CHANNELS:
