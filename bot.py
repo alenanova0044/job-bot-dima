@@ -16,6 +16,9 @@ RSS_FEEDS = [
     "https://remotive.com/remote-jobs/feed/",
     "https://weworkremotely.com/remote-jobs.rss",
     "https://himalayas.app/jobs/rss",
+    "https://www.workatastartup.com/jobs.rss",
+    "https://jobicy.com/?feed=job_feed",
+    "https://remote.co/remote-jobs/feed/",
 ]
 
 PROMPT = """Ты рекрутер. Проанализируй вакансию по профилю кандидата.
