@@ -4,8 +4,12 @@ import json
 import time
 import os
 import re
+import html
+import socket
 from datetime import datetime
-from bs4 import BeautifulSoup
+
+# Жёсткий лимит на сетевые операции feedparser (чтобы медленный RSS не вешал весь цикл)
+socket.setdefaulttimeout(20)
 
 # ── НАСТРОЙКИ ────────────────────────────────────────────────────────────────
 GEMINI_KEY = os.environ.get("GEMINI_KEY", "")
@@ -78,7 +82,9 @@ def save_seen(seen):
         json.dump(list(seen), f)
 
 def strip_html(text):
-    return re.sub(r'<[^>]+>', ' ', text or '').strip()
+    text = re.sub(r'<[^>]+>', ' ', text or '')
+    text = html.unescape(text)
+    return re.sub(r'\s+', ' ', text).strip()
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -145,7 +151,8 @@ def fetch_rss(feed_url):
     return entries
 
 def fetch_tg_channel(channel):
-    """Читает публичную веб-страницу канала t.me/s/<channel> и возвращает последние посты."""
+    """Читает публичную веб-страницу t.me/s/<channel> и возвращает последние посты.
+    Парсинг регулярками, без сторонних библиотек."""
     url = f"https://t.me/s/{channel}"
     entries = []
     try:
@@ -154,18 +161,24 @@ def fetch_tg_channel(channel):
             print(f"  TG @{channel}: HTTP {r.status_code}")
             return entries
 
-        soup = BeautifulSoup(r.text, "html.parser")
-        messages = soup.select(".tgme_widget_message")
+        page = r.text
 
-        for msg in messages[-10:]:  # последние 10 постов
-            text_el = msg.select_one(".tgme_widget_message_text")
-            text = text_el.get_text("\n").strip() if text_el else ""
+        # id постов вида data-post="channel/1234"
+        posts = re.findall(r'data-post="([^"]+)"', page)
+        # текст постов внутри <div class="tgme_widget_message_text ...">...</div>
+        texts = re.findall(
+            r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
+            page, re.DOTALL
+        )
+
+        for i, raw in enumerate(texts[-10:]):        # последние 10 постов
+            text = strip_html(raw.replace("<br/>", "\n").replace("<br>", "\n"))
             if not text:
                 continue
 
-            post = msg.get("data-post", "")               # вида "channel/1234"
+            post = posts[i] if i < len(posts) else ""
             link = f"https://t.me/{post}" if post else url
-            title = text.split("\n")[0][:100]             # первая строка поста как заголовок
+            title = text.split("\n")[0][:100]
 
             entries.append({
                 "link":        link,
@@ -180,7 +193,7 @@ def fetch_tg_channel(channel):
 # ── ОБРАБОТКА ────────────────────────────────────────────────────────────────
 
 def process_entries(entries, seen, source_label):
-    """Прогоняет список вакансий через дедуп → Gemini → отправку. Возвращает (новых, отправлено)."""
+    """Дедуп -> Gemini -> отправка. Возвращает (новых, отправлено)."""
     new_count = 0
     sent_count = 0
 
@@ -205,7 +218,6 @@ def process_entries(entries, seen, source_label):
         card  = parse_card(response)
         print(f"    Оценка: {score}/10")
 
-        # Шлём только релевантные (6+)
         if score >= 6:
             card_with_source = f"{card}\n📌 Источник: {source_label}"
             if send_telegram(card_with_source):
@@ -214,7 +226,7 @@ def process_entries(entries, seen, source_label):
             time.sleep(1)
 
         seen.add(link)
-        time.sleep(2)  # пауза между запросами к Gemini
+        time.sleep(2)
 
     return new_count, sent_count
 
@@ -227,19 +239,19 @@ def run():
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Запуск. Уже видели: {len(seen)} вакансий")
 
-    # 1) RSS job-сайты
-    for feed_url in RSS_FEEDS:
-        print(f"  Читаю RSS: {feed_url}")
-        entries = fetch_rss(feed_url)
-        n, s = process_entries(entries, seen, feed_url.split('/')[2])
-        new_count += n
-        sent_count += s
-
-    # 2) Telegram-каналы (публичные веб-страницы)
+    # 1) Telegram-каналы (сначала - это основной источник)
     for channel in TG_CHANNELS:
         print(f"  Читаю TG-канал: @{channel}")
         entries = fetch_tg_channel(channel)
         n, s = process_entries(entries, seen, f"@{channel}")
+        new_count += n
+        sent_count += s
+
+    # 2) RSS job-сайты
+    for feed_url in RSS_FEEDS:
+        print(f"  Читаю RSS: {feed_url}")
+        entries = fetch_rss(feed_url)
+        n, s = process_entries(entries, seen, feed_url.split('/')[2])
         new_count += n
         sent_count += s
 
