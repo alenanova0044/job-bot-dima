@@ -56,16 +56,6 @@ TG_CHANNELS = [
     "marketing_jobs",
 ]
 
-# Запросы к hh.ru API (по ключевым ролям Димы). Ищем только удалёнку за последние дни.
-HH_QUERIES = [
-    "project manager",
-    "digital producer",
-    "account manager",
-    "delivery manager",
-    "продюсер",
-    "менеджер проектов",
-]
-
 PROMPT = """Ты рекрутер. Оцени, насколько вакансия подходит кандидату, и дай балл от 1 до 10.
 
 ПРОФИЛЬ КАНДИДАТА (Дима):
@@ -233,44 +223,6 @@ def fetch_tg_channel(channel):
         print(f"  Ошибка TG @{channel}: {e}")
     return entries
 
-def fetch_hh(query):
-    """Читает вакансии с hh.ru через открытый API (без авторизации). Только удалёнка."""
-    url = "https://api.hh.ru/vacancies"
-    params = {
-        "text": query,
-        "schedule": "remote",
-        "period": 3,
-        "per_page": 10,
-        "order_by": "publication_time",
-    }
-    headers = {"User-Agent": "JobBotDima/1.0 (personal job search)"}
-    entries = []
-    try:
-        r = requests.get(url, params=params, headers=headers, timeout=15)
-        if not r.ok:
-            print(f"  HH '{query}': HTTP {r.status_code}")
-            return entries
-        data = r.json()
-        for v in data.get("items", []):
-            link = v.get("alternate_url", "")
-            if not link:
-                continue
-            name = v.get("name", "Без названия")
-            emp  = (v.get("employer") or {}).get("name", "Неизвестно")
-            area = (v.get("area") or {}).get("name", "")
-            snip = v.get("snippet") or {}
-            raw  = " ".join(filter(None, [snip.get("requirement", ""), snip.get("responsibility", "")]))
-            desc = f"Локация: {area}. Формат: удалённо. {strip_html(raw)}"
-            entries.append({
-                "link":        link,
-                "title":       name,
-                "company":     emp,
-                "description": desc,
-            })
-    except Exception as e:
-        print(f"  Ошибка HH '{query}': {e}")
-    return entries
-
 # ── ОБРАБОТКА ────────────────────────────────────────────────────────────────
 
 def process_entries(entries, seen, source_label):
@@ -328,15 +280,7 @@ def run():
         new_count += n
         sent_count += s
 
-    # 2) hh.ru (через API, только удалёнка)
-    for q in HH_QUERIES:
-        print(f"  Читаю HH: {q}")
-        entries = fetch_hh(q)
-        n, s2 = process_entries(entries, seen, "hh.ru")
-        new_count += n
-        sent_count += s2
-
-    # 3) RSS job-сайты
+    # 2) RSS job-сайты
     for feed_url in RSS_FEEDS:
         print(f"  Читаю RSS: {feed_url}")
         entries = fetch_rss(feed_url)
