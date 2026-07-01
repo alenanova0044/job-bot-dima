@@ -27,6 +27,7 @@ RSS_FEEDS = [
     "https://www.workatastartup.com/jobs.rss",
     "https://jobicy.com/?feed=job_feed",
     "https://remote.co/remote-jobs/feed/",
+    "https://remoteok.com/remote-jobs.rss",
 ]
 
 # Публичные Telegram-каналы (username без @). Читаются через веб-страницу t.me/s/<name>.
@@ -43,6 +44,16 @@ TG_CHANNELS = [
     "bbe_jobs",
     "it_vakansii_jobs",
     "youritjob",
+    "agile_jobs",
+    "projects_jobs_feed",
+    "careerspace",
+    "remote_jobs_relocate",
+    "products_jobs_projects",
+    "remotegeekjob",
+    "workshopjobs",
+    "femtechforce",
+    "job_for_relocation",
+    "marketing_jobs",
 ]
 
 PROMPT = """Ты рекрутер. Оцени, насколько вакансия подходит кандидату, и дай балл от 1 до 10.
