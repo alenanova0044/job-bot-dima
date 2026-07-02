@@ -68,10 +68,22 @@ TG_CHANNELS = [
 PROMPT = """Ты рекрутер. Оцени, насколько вакансия подходит кандидату, и дай балл от 1 до 10.
 
 ПРОФИЛЬ КАНДИДАТА (Дима):
-- Бэкграунд: 7+ лет в управлении digital/web-проектами, уровень Middle+/Senior.
-- Подходящие роли (широко): Digital Producer, Producer (в т.ч. в маркетинге/медиа),
-  Project Manager, Delivery Manager, Program Manager, Product Manager (не тех.),
-  Account Manager, Client Success / Client Engagement, Client Partner,
+- Уровень: Middle+/Senior, 7+ лет в управлении digital/web-проектами.
+- Кто он (по резюме): Head of digital/web projects. Ведёт портфель из 3–6 проектов
+  одновременно (бюджеты до ~$90K, суммарный оборот до ~$330K/год) для enterprise-клиентов
+  в fintech, digital production и корпоративных коммуникациях.
+- Сильные стороны: delivery-менеджмент и экономика проектов (маржа, бюджет, ресурсы),
+  stakeholder management, кризис-менеджмент и стабилизация проблемных проектов,
+  presale и оценка, запуск сложных digital-продуктов, долгие отношения с enterprise.
+- Подтверждённые кейсы: держал маржу 20–30% на банковском проекте (~$330K) 3 года;
+  спас сервисный проект >$100K при нехватке ресурсов; запустил промо-сайт банка с CMS/API
+  за <1 мес (конверсия 5.7%); продакшн 360-коммуникаций для корп. фестиваля банка за 7 дней;
+  digital-продакшн онлайн-конференции на 1000+ участников; редизайн карточки товара для
+  фармы (конверсия 3.8%→6.5%).
+- Инструменты: Jira, Confluence, ActiveCollab, Notion, Figma, Miro, Bitrix24, Google Workspace.
+- Подходящие роли (широко): Digital Producer, Producer (в т.ч. маркетинг/медиа),
+  Project Manager, Delivery Manager, Program Manager, Product Manager (не технический),
+  Account Manager, Client Success / Client Engagement / Client Partner,
   Project Coordinator (senior), Operations в digital/креативе.
 - Целевые индустрии: creative / branding agency, digital agency, fintech, SaaS,
   media, product-компании с дизайн-командами.
@@ -83,7 +95,8 @@ PROMPT = """Ты рекрутер. Оцени, насколько ваканси
   "релокация" / "релокейт" / "переезд" / "relocation" / "relocate" = РЕЛОКАЦИЯ (плюс, если в ЕС/Сербию);
   "офис" / "гибрид" / "гибридный" / "hybrid" / "on-site" = ОФИСНЫЙ ФОРМАТ (оценивай по локации);
   "только Москва" / "офис в РФ" / "офис в СНГ" без релокации = минус к баллу.
-- English B2 (может собеседоваться голосом).
+- English B2 (FCE), может собеседоваться голосом. Если жёстко требуется C1/native English —
+  это риск: понижай балл, но не считай стопом.
 
 КАК СТАВИТЬ БАЛЛ:
 - 8-10: роль прямо в цель (продюсер/PM/деливери/клиентская) + remote или ЕС/релокация.
@@ -91,6 +104,10 @@ PROMPT = """Ты рекрутер. Оцени, насколько ваканси
 - 1-4: не его специализация (напр. чистая разработка кода, чистые холодные продажи,
   junior/intern) ИЛИ жёсткий офис вне ЕС без релокации.
 - ЖЁСТКИЙ СТОП (ставь 1): gambling, casino, беттинг.
+- ЭТО НЕ ВАКАНСИЯ (ставь 1): вебинар, курс, обучение, мастер-класс, интенсив,
+  "набор на поток", реклама услуг, подборка/дайджест каналов, пост "как искать работу",
+  новости, анонсы, résumé-разбор, менторство, промо. Вакансия — это конкретная
+  открытая позиция в конкретной компании с обязанностями. Если это не так — балл 1.
 Не блокируй вакансию только из-за слов "sales" или "engineer" в тексте —
 смотри на СУТЬ роли. Если роль подходящая, но с продажами/техникой по краю — это не стоп.
 
@@ -189,7 +206,7 @@ def fetch_rss(feed_url):
     except Exception as e:
         print(f"  Ошибка фида: {e}")
         return entries
-    for entry in feed.entries[:8]:
+    for entry in feed.entries[:5]:
         entries.append({
             "link":        entry.get("link", ""),
             "title":       entry.get("title", "Без названия"),
@@ -199,6 +216,8 @@ def fetch_rss(feed_url):
     return entries
 
 def fetch_tg_channel(channel):
+    """Читает t.me/s/<channel>. Разбивает страницу на блоки-посты,
+    чтобы ссылка (t.me/канал/номер) точно соответствовала тексту вакансии."""
     url = f"https://t.me/s/{channel}"
     entries = []
     try:
@@ -207,16 +226,22 @@ def fetch_tg_channel(channel):
             print(f"  TG @{channel}: HTTP {r.status_code}")
             return entries
         page = r.text
-        posts = re.findall(r'data-post="([^"]+)"', page)
-        texts = re.findall(
-            r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
-            page, re.DOTALL
-        )
-        for i, raw in enumerate(texts[-10:]):
-            text = strip_html(raw.replace("<br/>", "\n").replace("<br>", "\n"))
+
+        # Режем страницу на отдельные сообщения по началу блока сообщения
+        blocks = re.split(r'(?=<div class="tgme_widget_message[ "])', page)
+
+        for block in blocks[-12:]:  # последние ~12 сообщений
+            post_m = re.search(r'data-post="([^"]+)"', block)
+            text_m = re.search(
+                r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
+                block, re.DOTALL
+            )
+            if not text_m:
+                continue
+            text = strip_html(text_m.group(1).replace("<br/>", "\n").replace("<br>", "\n"))
             if not text:
                 continue
-            post = posts[i] if i < len(posts) else ""
+            post = post_m.group(1) if post_m else ""          # вида "channel/1234"
             link = f"https://t.me/{post}" if post else url
             title = text.split("\n")[0][:100]
             entries.append({
@@ -231,6 +256,18 @@ def fetch_tg_channel(channel):
 
 # ── ОБРАБОТКА ────────────────────────────────────────────────────────────────
 
+# Явный не-вакансионный мусор — отсекаем до Gemini (экономит лимит API)
+JUNK_MARKERS = [
+    "вебинар", "webinar", "курс ", "курса", "курсы", "обучени", "мастер-класс",
+    "мастеркласс", "интенсив", "набор на поток", "старт потока", "поток стартует",
+    "менторств", "разбор резюме", "подборка каналов", "дайджест", "розыгрыш",
+    "как искать работу", "как найти работу", "реклама",
+]
+
+def looks_like_junk(title, description):
+    text = f"{title} {description}".lower()
+    return any(m in text for m in JUNK_MARKERS)
+
 def process_entries(entries, seen, source_label):
     new_count = 0
     sent_count = 0
@@ -244,6 +281,11 @@ def process_entries(entries, seen, source_label):
 
         new_count += 1
         print(f"    Новая: {title[:60]}")
+
+        if looks_like_junk(title, desc):
+            print(f"    ⏭ Пропуск (не вакансия / реклама)")
+            seen.add(link)
+            continue
 
         response = analyze_with_gemini(title, company, desc, link)
         if not response:
