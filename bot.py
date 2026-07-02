@@ -17,8 +17,17 @@ TG_TOKEN   = os.environ.get("TG_TOKEN", "")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "-1003890109420")
 SEEN_FILE  = "seen_jobs.json"
 
+# Живая бесплатная модель (gemini-1.5-flash отключена Google — возвращала 404)
+GEMINI_MODEL = "gemini-2.5-flash"
+
 # Порог отправки в группу: карточка уходит, если оценка >= этого числа
 MIN_SCORE = 5
+
+# Как часто запускать сбор (в часах). Бот работает постоянно и повторяет цикл.
+INTERVAL_HOURS = 1
+
+# Пауза между запросами к Gemini (сек). Бесплатный лимит ~10 запросов/мин.
+GEMINI_PAUSE = 6
 
 RSS_FEEDS = [
     "https://remotive.com/remote-jobs/feed/",
@@ -128,27 +137,36 @@ def send_telegram(text):
     }
     try:
         r = requests.post(url, json=payload, timeout=10)
+        if not r.ok:
+            print(f"    TG HTTP {r.status_code}: {r.text[:150]}")
         return r.ok
     except Exception as e:
-        print(f"TG error: {e}")
+        print(f"    TG error: {e}")
         return False
 
 def analyze_with_gemini(title, company, description, link):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_KEY}"
     desc_clean = strip_html(description)[:2000]
-    prompt = PROMPT.format(
-        title=title,
-        company=company,
-        description=desc_clean
-    )
+    prompt = PROMPT.format(title=title, company=company, description=desc_clean)
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    try:
-        r = requests.post(url, json=payload, timeout=30)
-        if r.ok:
-            data = r.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        print(f"Gemini error: {e}")
+
+    for attempt in range(2):
+        try:
+            r = requests.post(url, json=payload, timeout=40)
+            if r.ok:
+                data = r.json()
+                parts = data["candidates"][0]["content"]["parts"]
+                return "".join(p.get("text", "") for p in parts)
+            if r.status_code == 429:
+                print(f"    Gemini лимит (429), жду 20с и пробую снова...")
+                time.sleep(20)
+                continue
+            # любой другой не-успех — печатаем, чтобы было видно (404, 400 и т.д.)
+            print(f"    Gemini HTTP {r.status_code}: {r.text[:200]}")
+            return None
+        except Exception as e:
+            print(f"    Gemini error: {e}")
+            return None
     return None
 
 def parse_score(response):
@@ -158,7 +176,7 @@ def parse_score(response):
     return 0
 
 def parse_card(response):
-    match = re.search(r'CARD:\n(.*)', response, re.DOTALL)
+    match = re.search(r'CARD:\s*\n?(.*)', response, re.DOTALL)
     if match:
         return match.group(1).strip()
     return response.strip()
@@ -166,15 +184,13 @@ def parse_card(response):
 # ── ИСТОЧНИКИ ────────────────────────────────────────────────────────────────
 
 def fetch_rss(feed_url):
-    """Возвращает список вакансий (dict) из одного RSS-фида."""
     entries = []
     try:
         feed = feedparser.parse(feed_url)
     except Exception as e:
         print(f"  Ошибка фида: {e}")
         return entries
-
-    for entry in feed.entries[:10]:  # последние 10
+    for entry in feed.entries[:8]:
         entries.append({
             "link":        entry.get("link", ""),
             "title":       entry.get("title", "Без названия"),
@@ -184,8 +200,6 @@ def fetch_rss(feed_url):
     return entries
 
 def fetch_tg_channel(channel):
-    """Читает публичную веб-страницу t.me/s/<channel> и возвращает последние посты.
-    Парсинг регулярками, без сторонних библиотек."""
     url = f"https://t.me/s/{channel}"
     entries = []
     try:
@@ -193,26 +207,19 @@ def fetch_tg_channel(channel):
         if not r.ok:
             print(f"  TG @{channel}: HTTP {r.status_code}")
             return entries
-
         page = r.text
-
-        # id постов вида data-post="channel/1234"
         posts = re.findall(r'data-post="([^"]+)"', page)
-        # текст постов внутри <div class="tgme_widget_message_text ...">...</div>
         texts = re.findall(
             r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
             page, re.DOTALL
         )
-
-        for i, raw in enumerate(texts[-10:]):        # последние 10 постов
+        for i, raw in enumerate(texts[-10:]):
             text = strip_html(raw.replace("<br/>", "\n").replace("<br>", "\n"))
             if not text:
                 continue
-
             post = posts[i] if i < len(posts) else ""
             link = f"https://t.me/{post}" if post else url
             title = text.split("\n")[0][:100]
-
             entries.append({
                 "link":        link,
                 "title":       title,
@@ -226,15 +233,12 @@ def fetch_tg_channel(channel):
 # ── ОБРАБОТКА ────────────────────────────────────────────────────────────────
 
 def process_entries(entries, seen, source_label):
-    """Дедуп -> Gemini -> отправка. Возвращает (новых, отправлено)."""
     new_count = 0
     sent_count = 0
-
     for entry in entries:
         link = entry.get("link", "")
         if not link or link in seen:
             continue
-
         title   = entry.get("title", "Без названия")
         company = entry.get("company", "Неизвестно")
         desc    = entry.get("description", "")
@@ -245,6 +249,7 @@ def process_entries(entries, seen, source_label):
         response = analyze_with_gemini(title, company, desc, link)
         if not response:
             seen.add(link)
+            time.sleep(GEMINI_PAUSE)
             continue
 
         score = parse_score(response)
@@ -259,37 +264,40 @@ def process_entries(entries, seen, source_label):
             time.sleep(1)
 
         seen.add(link)
-        time.sleep(2)
-
+        time.sleep(GEMINI_PAUSE)
     return new_count, sent_count
 
-# ── ОСНОВНОЙ ЦИКЛ ────────────────────────────────────────────────────────────
+# ── ОДИН ПРОГОН ──────────────────────────────────────────────────────────────
 
 def run():
     seen = load_seen()
     new_count = 0
     sent_count = 0
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Запуск. Порог: {MIN_SCORE}+. Уже видели: {len(seen)} вакансий")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Запуск. Модель: {GEMINI_MODEL}, порог: {MIN_SCORE}+. Уже видели: {len(seen)}")
 
-    # 1) Telegram-каналы (сначала - это основной источник)
     for channel in TG_CHANNELS:
         print(f"  Читаю TG-канал: @{channel}")
-        entries = fetch_tg_channel(channel)
-        n, s = process_entries(entries, seen, f"@{channel}")
+        n, s = process_entries(fetch_tg_channel(channel), seen, f"@{channel}")
         new_count += n
         sent_count += s
 
-    # 2) RSS job-сайты
     for feed_url in RSS_FEEDS:
         print(f"  Читаю RSS: {feed_url}")
-        entries = fetch_rss(feed_url)
-        n, s = process_entries(entries, seen, feed_url.split('/')[2])
+        n, s = process_entries(fetch_rss(feed_url), seen, feed_url.split('/')[2])
         new_count += n
         sent_count += s
 
     save_seen(seen)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Готово. Новых: {new_count}, отправлено: {sent_count}")
 
+# ── ЦИКЛ (запуск раз в INTERVAL_HOURS часов) ─────────────────────────────────
+
 if __name__ == "__main__":
-    run()
+    while True:
+        try:
+            run()
+        except Exception as e:
+            print(f"Ошибка цикла: {e}")
+        print(f"Сплю {INTERVAL_HOURS} ч до следующего прогона...")
+        time.sleep(INTERVAL_HOURS * 3600)
