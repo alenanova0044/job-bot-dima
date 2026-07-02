@@ -108,8 +108,7 @@ CARD:
 💰 [зарплата или «не указана»]
 📋 [2-3 строки — суть роли под профиль Димы]
 ⚠️ Стоп-факторы: [перечисли или «нет»]
-📌 [Откликаться / Рассмотреть / Пропустить]
-🔗 [ссылка на вакансию]"""
+📌 [Откликаться / Рассмотреть / Пропустить]"""
 
 # ── УТИЛИТЫ ──────────────────────────────────────────────────────────────────
 
@@ -257,7 +256,7 @@ def process_entries(entries, seen, source_label):
         print(f"    Оценка: {score}/10")
 
         if score >= MIN_SCORE:
-            card_with_source = f"{card}\n📌 Источник: {source_label}"
+            card_with_source = f"{card}\n🔗 {link}\n📌 Источник: {source_label}"
             if send_telegram(card_with_source):
                 sent_count += 1
                 print(f"    ✅ Отправлено в TG")
