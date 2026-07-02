@@ -15,10 +15,15 @@ socket.setdefaulttimeout(20)
 GEMINI_KEY = os.environ.get("GEMINI_KEY", "")
 TG_TOKEN   = os.environ.get("TG_TOKEN", "")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "-1003890109420")
-SEEN_FILE  = "seen_jobs.json"
+# Постоянное хранилище: Railway Volume монтируется в /data.
+# Если тома нет — падаем обратно на локальный файл (не критично, но сбрасывается при деплое).
+DATA_DIR = os.environ.get("DATA_DIR", "/data")
+if not os.path.isdir(DATA_DIR):
+    DATA_DIR = "."
+SEEN_FILE = os.path.join(DATA_DIR, "seen_jobs.json")
 
-# Живая бесплатная модель (gemini-1.5-flash отключена Google — возвращала 404)
-GEMINI_MODEL = "gemini-2.5-flash"
+# Живая бесплатная модель. flash-lite: свой дневной лимит (1500/сут) + 30 запросов/мин
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 
 # Порог отправки в группу: карточка уходит, если оценка >= этого числа
 MIN_SCORE = 5
@@ -27,7 +32,7 @@ MIN_SCORE = 5
 INTERVAL_HOURS = 1
 
 # Пауза между запросами к Gemini (сек). Бесплатный лимит ~10 запросов/мин.
-GEMINI_PAUSE = 6
+GEMINI_PAUSE = 4
 
 RSS_FEEDS = [
     "https://remotive.com/remote-jobs/feed/",
@@ -315,7 +320,7 @@ def run():
     new_count = 0
     sent_count = 0
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Запуск. Модель: {GEMINI_MODEL}, порог: {MIN_SCORE}+. Уже видели: {len(seen)}")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Запуск. Модель: {GEMINI_MODEL}, порог: {MIN_SCORE}+. Память: {SEEN_FILE}. Уже видели: {len(seen)}")
 
     for channel in TG_CHANNELS:
         print(f"  Читаю TG-канал: @{channel}")
