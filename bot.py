@@ -171,7 +171,7 @@ def analyze_with_gemini(title, company, description, link):
     prompt = PROMPT.format(title=title, company=company, description=desc_clean)
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    for attempt in range(2):
+    for attempt in range(4):
         try:
             r = requests.post(url, json=payload, timeout=40)
             if r.ok:
@@ -182,12 +182,20 @@ def analyze_with_gemini(title, company, description, link):
                 print(f"    Gemini лимит (429), жду 20с и пробую снова...")
                 time.sleep(20)
                 continue
-            # любой другой не-успех — печатаем, чтобы было видно (404, 400 и т.д.)
+            if r.status_code in (500, 503):
+                # временная перегрузка модели на стороне Google — ждём и повторяем
+                wait = 10 * (attempt + 1)
+                print(f"    Gemini перегружен ({r.status_code}), жду {wait}с и пробую снова...")
+                time.sleep(wait)
+                continue
+            # прочие не-успехи (404, 400 и т.д.) — печатаем и выходим
             print(f"    Gemini HTTP {r.status_code}: {r.text[:200]}")
             return None
         except Exception as e:
             print(f"    Gemini error: {e}")
-            return None
+            time.sleep(5)
+            continue
+    print(f"    Gemini: не удалось после нескольких попыток, пропускаю")
     return None
 
 def parse_score(response):
