@@ -34,6 +34,14 @@ INTERVAL_HOURS = 1
 # Пауза между запросами к Gemini (сек). Бесплатный лимит ~10 запросов/мин.
 GEMINI_PAUSE = 4
 
+# Предохранитель: если подряд столько запросов к Gemini провалились (лимит/перегрузка) —
+# считаем, что квота исчерпана, и прерываем прогон до следующего часа (не молотим впустую).
+CONSEC_FAIL_LIMIT = 8
+_consec_fail = 0
+
+class QuotaExhausted(Exception):
+    pass
+
 RSS_FEEDS = [
     "https://remotive.com/remote-jobs/feed/",
     "https://weworkremotely.com/remote-jobs.rss",
@@ -282,6 +290,7 @@ def looks_like_junk(title, description):
     return any(m in text for m in JUNK_MARKERS)
 
 def process_entries(entries, seen, source_label):
+    global _consec_fail
     new_count = 0
     sent_count = 0
     for entry in entries:
@@ -295,17 +304,25 @@ def process_entries(entries, seen, source_label):
         new_count += 1
         print(f"    Новая: {title[:60]}")
 
+        # реклама/не-вакансия — решение окончательное: помечаем и сохраняем
         if looks_like_junk(title, desc):
             print(f"    ⏭ Пропуск (не вакансия / реклама)")
             seen.add(link)
+            save_seen(seen)
             continue
 
         response = analyze_with_gemini(title, company, desc, link)
         if not response:
-            seen.add(link)
+            # не смогли оценить (лимит/перегрузка) — НЕ помечаем seen,
+            # чтобы повторить позже, когда сервис оживёт
+            _consec_fail += 1
+            print(f"    ↩ отложено (повторю позже)")
+            if _consec_fail >= CONSEC_FAIL_LIMIT:
+                raise QuotaExhausted(f"{_consec_fail} сбоев подряд")
             time.sleep(GEMINI_PAUSE)
             continue
 
+        _consec_fail = 0  # успех — сбрасываем счётчик
         score = parse_score(response)
         card  = parse_card(response)
         print(f"    Оценка: {score}/10")
@@ -318,12 +335,15 @@ def process_entries(entries, seen, source_label):
             time.sleep(1)
 
         seen.add(link)
+        save_seen(seen)          # сохраняем прогресс сразу (переживёт перезапуск/деплой)
         time.sleep(GEMINI_PAUSE)
     return new_count, sent_count
 
 # ── ОДИН ПРОГОН ──────────────────────────────────────────────────────────────
 
 def run():
+    global _consec_fail
+    _consec_fail = 0
     seen = load_seen()
     new_count = 0
     sent_count = 0
@@ -351,6 +371,8 @@ if __name__ == "__main__":
     while True:
         try:
             run()
+        except QuotaExhausted as e:
+            print(f"Похоже, лимит Gemini исчерпан ({e}). Пауза до следующего цикла.")
         except Exception as e:
             print(f"Ошибка цикла: {e}")
         print(f"Сплю {INTERVAL_HOURS} ч до следующего прогона...")
