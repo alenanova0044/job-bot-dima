@@ -23,7 +23,8 @@ if not os.path.isdir(DATA_DIR):
 SEEN_FILE = os.path.join(DATA_DIR, "seen_jobs.json")
 
 # Живая бесплатная модель. flash-lite: свой дневной лимит (1500/сут) + 30 запросов/мин
-GEMINI_MODEL = "gemini-2.5-flash-lite"
+GEMINI_MODEL = "gemini-2.5-flash-lite"      # основная
+GEMINI_MODEL_FALLBACK = "gemini-2.5-flash"  # запасная (если основная перегружена/лимит)
 
 # Порог отправки в группу: карточка уходит, если оценка >= этого числа
 MIN_SCORE = 5
@@ -173,36 +174,49 @@ def send_telegram(text):
         print(f"    TG error: {e}")
         return False
 
+def _call_gemini(model, prompt):
+    """Один вызов конкретной модели. Возвращает (текст | None, статус).
+    статус: 'ok' | 'busy' (503/429 — стоит попробовать запасную) | 'fail' (прочее)."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    try:
+        r = requests.post(url, json=payload, timeout=40)
+        if r.ok:
+            data = r.json()
+            parts = data["candidates"][0]["content"]["parts"]
+            return "".join(p.get("text", "") for p in parts), "ok"
+        if r.status_code in (429, 500, 503):
+            return None, "busy"
+        print(f"    Gemini HTTP {r.status_code}: {r.text[:200]}")
+        return None, "fail"
+    except Exception as e:
+        print(f"    Gemini error: {e}")
+        return None, "fail"
+
+
 def analyze_with_gemini(title, company, description, link):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_KEY}"
     desc_clean = strip_html(description)[:2000]
     prompt = PROMPT.format(title=title, company=company, description=desc_clean)
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
     for attempt in range(4):
-        try:
-            r = requests.post(url, json=payload, timeout=40)
-            if r.ok:
-                data = r.json()
-                parts = data["candidates"][0]["content"]["parts"]
-                return "".join(p.get("text", "") for p in parts)
-            if r.status_code == 429:
-                print(f"    Gemini лимит (429), жду 20с и пробую снова...")
-                time.sleep(20)
-                continue
-            if r.status_code in (500, 503):
-                # временная перегрузка модели на стороне Google — ждём и повторяем
-                wait = 10 * (attempt + 1)
-                print(f"    Gemini перегружен ({r.status_code}), жду {wait}с и пробую снова...")
-                time.sleep(wait)
-                continue
-            # прочие не-успехи (404, 400 и т.д.) — печатаем и выходим
-            print(f"    Gemini HTTP {r.status_code}: {r.text[:200]}")
-            return None
-        except Exception as e:
-            print(f"    Gemini error: {e}")
-            time.sleep(5)
+        # сначала основная модель
+        text, status = _call_gemini(GEMINI_MODEL, prompt)
+        if status == "ok":
+            return text
+        if status == "busy":
+            # основная перегружена/лимит — сразу пробуем запасную
+            text2, status2 = _call_gemini(GEMINI_MODEL_FALLBACK, prompt)
+            if status2 == "ok":
+                print(f"    (ответила запасная модель {GEMINI_MODEL_FALLBACK})")
+                return text2
+            # обе заняты — ждём и повторяем весь заход
+            wait = 15 * (attempt + 1)
+            print(f"    Обе модели заняты (503/429), жду {wait}с и пробую снова...")
+            time.sleep(wait)
             continue
+        # status == 'fail' на основной — выходим
+        return None
+
     print(f"    Gemini: не удалось после нескольких попыток, пропускаю")
     return None
 
