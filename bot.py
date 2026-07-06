@@ -76,6 +76,11 @@ TG_CHANNELS = [
     "femtechforce",
     "job_for_relocation",
     "marketing_jobs",
+    "design_work",
+    "project_managers",
+    "digital_jobs",
+    "marketing_vacancies",
+    "choicy_work",
 ]
 
 PROMPT = """Ты рекрутер. Оцени, насколько вакансия подходит кандидату, и дай балл от 1 до 10.
