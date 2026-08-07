@@ -1,0 +1,45 @@
+name: run-bot
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'      # каждые 2 часа (UTC). Можно '0 * * * *' для ежечасно.
+  workflow_dispatch: {}         # ручной запуск кнопкой Run workflow
+
+permissions:
+  contents: write               # чтобы коммитить seen_jobs.json обратно
+
+concurrency:
+  group: run-bot
+  cancel-in-progress: false     # не запускать второй прогон поверх идущего
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20         # страховка: прогон не сожжёт часы, если зависнет
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
+          TG_TOKEN:   ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python bot.py
+
+      - name: Commit state
+        if: always()            # сохранить прогресс даже если прогон прервался
+        run: |
+          git config user.name  "job-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add seen_jobs.json || true
+          git commit -m "update seen_jobs.json [skip ci]" || echo "nothing to commit"
+          git push || echo "nothing to push"
